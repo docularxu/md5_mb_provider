@@ -39,6 +39,7 @@
 #include <errno.h>
 #include <time.h>
 #include <string.h>
+#include <stdbool.h>
 #include <openssl/md5.h>
 #include <isa-l_crypto/md5_mb.h>		/* isa-l_crypto header */
 #include "isal_crypto_inf.h"
@@ -46,14 +47,18 @@
 #define ERR_PRINT	printf
 // #define DBG_PRINT	printf
 #define DBG_PRINT
+// #define DIGEST_VERIFY	/* verify the digest against OpenSSL */
+
 #define NUM_CTX_SLOTS	512	/* number of available CTX slots
 				 * in the CTX_POOL */
 #define MAGIC_NUMBER_EXIT_THREAD	(NUM_CTX_SLOTS*2)
-#define CTX_FLUSH_NSEC		(10000)	/* nanoseconds before forced mb_flush */
 #define max(a,b)		(((a) > (b)) ? (a) : (b))
 
-// #define DIGEST_VERIFY	/* verify the digest against OpenSSL */
-
+#define CTX_FLUSH_NSEC		(10000)	/* nanoseconds before forced mb_flush */
+typedef enum {
+	TIME_FLUSH_NEVER = 0,	/* 1 hour */
+	TIME_FLUSH_FIRST = 1,	/* CTX_FLUSH_NSEC */
+} TIME_FLUSH_LEVEL;
 
 /* Inter-thread communication pipe
  *   One consumer: md5_mb_worker_thread_main
@@ -79,10 +84,13 @@ typedef struct {
 	HASH_CTX_FLAG	flags;
 	md5_callback_t	*cb;
 	void		*cb_param;
-	sem_t		sem_job_done;		/* unlocked when MD5_mb_worker thread
-						 * finished processing of this CTX */
 	uint64_t	len_processed;		/* total length of data which has
 						 * been processed */
+	/* sync mode special */
+	sem_t		sem_job_done;		/* sem_post() when finished processing of this CTX */
+	/* async mode special */
+	bool		is_async;		/* yes or no: OpenSSL ASYNC mode */
+	int		wait_fd;		/* write() when finished processing of this CTX */
 } MD5_CTX_USERDATA;
 
 /* pre-allocated space for userdata[] */
@@ -185,15 +193,23 @@ static int ctx_slot_release(int ctx_idx)
  */
 static int wd_md5_ctx_callback(MD5_HASH_CTX *ctx)
 {
-	MD5_CTX_USERDATA *userdata = (MD5_CTX_USERDATA *)ctx->user_data;
+	MD5_CTX_USERDATA *userdata = (MD5_CTX_USERDATA *)hash_ctx_user_data(ctx);
+	uint64_t buf = 1;
 
-	return sem_post(&userdata->sem_job_done);
+	// update the len_processed
+	userdata->len_processed += userdata->len;
+
+	if (userdata->is_async) { /* async mode */
+		/* notify by wait_fd */
+		if (unlikely(write(userdata->wait_fd, &buf, sizeof(uint64_t)) == -1)) {
+			ERR_PRINT("failed to write to wait_fd - error: %d\n", errno);
+			return -1;
+		}
+		return 0;
+	} else { /* sync mode */
+		return sem_post(&userdata->sem_job_done);
+	}
 }
-
-typedef enum {
-	TIME_FLUSH_NEVER = 0,	/* 1 hour */
-	TIME_FLUSH_FIRST = 1,	/* CTX_FLUSH_NSEC */
-} TIME_FLUSH_LEVEL;
 
 /* set_time_flush -- set flush timeout */
 static void set_time_flush(struct timespec *ts, TIME_FLUSH_LEVEL level)
@@ -244,7 +260,7 @@ static void *md5_mb_worker_thread_main(void *args)
 
 			// check if a valid *job is returned, call its _cb())
 			if (ctx != NULL) {
-				userdata = (MD5_CTX_USERDATA *)ctx->user_data;
+				userdata = (MD5_CTX_USERDATA *)hash_ctx_user_data(ctx);
 				(userdata->cb)(userdata->cb_param);
 				set_time_flush(&time_flush, TIME_FLUSH_FIRST);
 			} else {
@@ -257,8 +273,15 @@ static void *md5_mb_worker_thread_main(void *args)
 		if (ret == 0) {		// new CTX coming
 			// read in CTX index
 			ret = read(pipefd[0], &ctx_idx, sizeof(int));
-			if (unlikely(ret <= 0))
+			/* TODO: Need better handling of when (ret != 4)?
+			 *       should we read() again, or should we discard?
+			 *       If we read() again, how to concatenate &ctx_idx
+			 *       If we discard, how to let the producer know?
+			 */
+			if (unlikely(ret != sizeof(int))) {
 				ERR_PRINT("Failed to read from pipe. ret=%d, errno=%d", ret, errno);
+				continue;
+			}
 			if (unlikely(ctx_idx == MAGIC_NUMBER_EXIT_THREAD)) {
 				DBG_PRINT("EXIT: md5_mb worker thread\n");
 				break;
@@ -266,12 +289,12 @@ static void *md5_mb_worker_thread_main(void *args)
 				ERR_PRINT("Unexpected CTX slot index. ctx_idx=%d\n", ctx_idx);
 				continue;
 			}
-			ctx = &md5_ctx_pool.ctxpool[ctx_idx];
-			userdata = (MD5_CTX_USERDATA *)ctx->user_data;
 
-			DBG_PRINT("read from pipe, length=%d bytes, ctx_idx=%d\n",
-							ret, ctx_idx);
-			DBG_PRINT("data length=%d\n", userdata->len);
+			ctx = &md5_ctx_pool.ctxpool[ctx_idx];
+			userdata = (MD5_CTX_USERDATA *)hash_ctx_user_data(ctx);
+
+			DBG_PRINT("read %d bytes from pipe, ctx_idx=%d, data_len=%d\n",
+							ret, ctx_idx, userdata->len);
 
 			// call _submit() on new CTX
 			ctx = md5_ctx_mgr_submit(&md5_ctx_mgr, ctx, userdata->buff,
@@ -279,7 +302,9 @@ static void *md5_mb_worker_thread_main(void *args)
 
 			// check if a valid *job is returned, call its _cb())
 			if (ctx != NULL) {
-				userdata = (MD5_CTX_USERDATA *)ctx->user_data;
+				DBG_PRINT("FULL job lanes. ========================\n");
+				DBG_PRINT("Finished: ctx_idx = %ld\n", ctx - &md5_ctx_pool.ctxpool[0]);
+				userdata = (MD5_CTX_USERDATA *)hash_ctx_user_data(ctx);
 				(userdata->cb)(userdata->cb_param);
 			}
 
@@ -329,6 +354,42 @@ int wd_do_digest_init(void)
 }
 
 /**
+ * @brief setup CTX and notify MD5 mb worker thread
+ * @return int 
+ *     0: succeeded
+ *    -1: failed
+ */
+static inline int send_to_worker_thread(MD5_CTX_USERDATA *userdata,
+					   int ctx_idx,
+					   const unsigned char *buff,
+					   uint32_t len)
+{
+	int ret;
+	//   - according to len_processed to set flags
+	if (userdata->len_processed == 0)
+		userdata->flags = HASH_FIRST;
+	else if (len == 0)
+		userdata->flags = HASH_LAST;
+	else
+		userdata->flags = HASH_UPDATE;
+
+	//   - set *buff and len into .userdata
+	userdata->buff = (unsigned char *)buff;
+	userdata->len = len;
+
+	// write 'ctx_idx' into pipe
+	ret = write(pipefd[1], &ctx_idx, sizeof(ctx_idx));
+	if (unlikely(ret < 0)) {
+		ERR_PRINT("write to pipefd failed\n");
+		return -1;
+	}
+
+	// notify MD5 mb worker thread
+	sem_post(&md5_ctx_pool.sem_ctx_filled);
+	return 0;
+}
+
+/**
  * @brief Interface API published to upper layers. When called,
  *     it do MD5 digest calculation in a synchronised manner.
  *
@@ -349,33 +410,51 @@ int wd_do_digest_sync(int ctx_idx, const unsigned char *buff, uint32_t len)
 	ctx = &md5_ctx_pool.ctxpool[ctx_idx];
 	userdata = (MD5_CTX_USERDATA *)hash_ctx_user_data(ctx);
 
-	//   - according to len_processed to set flags
-	if (userdata->len_processed == 0)
-		userdata->flags = HASH_FIRST;
-	else if (len == 0)
-		userdata->flags = HASH_LAST;
-	else
-		userdata->flags = HASH_UPDATE;
-
-	//   - set *buff and len into .userdata
-	userdata->buff = (unsigned char *)buff;
-	userdata->len = len;
-
-	// write 'ctx_idx' into pipe
-	ret = write(pipefd[1], &ctx_idx, sizeof(ctx_idx));
-	if (ret < 0) {
+	//   - set is_async
+	userdata->is_async = false;
+	ret = send_to_worker_thread(userdata, ctx_idx, buff, len);
+	if (unlikely(ret < 0)) {
 		ERR_PRINT("write to pipefd failed\n");
 		return -1;
 	}
 
-	// notify MD5 mb worker thread
-	sem_post(&md5_ctx_pool.sem_ctx_filled);
-
 	// waiting on sem_job_done, ->cb() will unlock it when the job is done
 	sem_wait(&userdata->sem_job_done);
 
-	// update the len_processed
-	userdata->len_processed += len;
+	return 0;
+}
+
+/**
+ * @brief Do MD5 digest calculation in a asynchronised manner.
+ *
+ * @param ctx_idx
+ * @param buff
+ * @param len
+ * @param wait_fd: write() to notify completion of the work
+ * @return
+ *    0: succeeded
+ *    negative: failure
+ */
+int wd_do_digest_async(int ctx_idx, const unsigned char *buff, uint32_t len,
+		       int wait_fd)
+{
+
+	int ret;
+	MD5_HASH_CTX *ctx;
+	MD5_CTX_USERDATA *userdata;
+
+	ctx = &md5_ctx_pool.ctxpool[ctx_idx];
+	userdata = (MD5_CTX_USERDATA *)hash_ctx_user_data(ctx);
+
+	//   - set is_async
+	userdata->is_async = true;
+	userdata->wait_fd = wait_fd;
+	ret = send_to_worker_thread(userdata, ctx_idx, buff, len);
+	if (unlikely(ret < 0)) {
+		ERR_PRINT("write to pipefd failed\n");
+		return -1;
+	}
+
 	return 0;
 }
 

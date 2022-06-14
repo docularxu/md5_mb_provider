@@ -16,11 +16,18 @@
 #include <stdio.h>
 #include <string.h>
 #include <dlfcn.h>
+#include <unistd.h>
 #include <openssl/engine.h>
 #include <openssl/md5.h>
 #include <openssl/evp.h>
+#include <openssl/async.h>
+#include <sys/eventfd.h>
 #include "e_md5_mb.h"
 #include "isal_crypto_inf.h"
+
+#define ERR_PRINT	printf
+#define DBG_PRINT
+// #define DBG_PRINT	printf
 
 /**
  * @brief this structure contains the private data for interfacing
@@ -32,12 +39,10 @@ struct digest_priv_ctx {
 	int ctx_idx;
 };
 
-#define BUF_LEN (16 * 1024 * 1024)
-
 static int digest_nids[] = {
 	NID_md5,
 	0,
-	};
+};
 
 static EVP_MD *md5_mb_md5;
 
@@ -77,6 +82,12 @@ static int md5_mb_digest_init(EVP_MD_CTX *ctx)
 	int nid = EVP_MD_nid(EVP_MD_CTX_md(ctx));
 	int ret;
 
+	/* to check if it's async or not? */
+	ASYNC_JOB *a_job;
+	a_job = ASYNC_get_current_job();
+	if (a_job != NULL) {	/* this is an OPENSSL async job */
+		DBG_PRINT("_init: Async mode\n");
+	}
 	/* TODO: intialize &priv user data
 	 *   - ref: uadk-engine sets ctx_cfg, ctxs, and sched policy
 	 */
@@ -102,6 +113,13 @@ out:
 	return 0;
 }
 
+
+static void async_fd_cleanup(ASYNC_WAIT_CTX *ctx, const void *key,
+			     OSSL_ASYNC_FD readfd, void *custom)
+{
+	close(readfd);
+}
+
 /**
  * @brief update the digest using data of data_len
  * 
@@ -114,10 +132,62 @@ static int md5_mb_digest_update(EVP_MD_CTX *ctx, const void *data, size_t data_l
 {
 	struct digest_priv_ctx *priv =
 		(struct digest_priv_ctx *) EVP_MD_CTX_md_data(ctx);
+	ASYNC_JOB *a_job;
+	ASYNC_WAIT_CTX *wait_ctx;
+	OSSL_ASYNC_FD wait_fd;
+	uint64_t buf;
 	int ret;
 
-	ret = wd_do_digest_sync(priv->ctx_idx, data, data_len);
+	/* to check if it's async or not? */
+	a_job = ASYNC_get_current_job();
+	if (a_job != NULL) {	/* this is an OPENSSL async job */
+		DBG_PRINT("_update Async mode\n");
 
+		/* set wait_fd */
+		wait_ctx = ASYNC_get_wait_ctx(a_job);
+		if (wait_ctx == NULL) {
+			ERR_PRINT("ASYNC_get_wait_ctx() returns NULL\n");
+			return 0;
+		}
+
+		// if (ASYNC_WAIT_CTX_get_fd(wait_ctx, engine_id, &wait_fd, NULL) == 0) {
+		/* TODO: move this to _init */
+		wait_fd = eventfd(0, EFD_NONBLOCK);
+		if (unlikely(wait_fd == -1))
+			return 0;
+		DBG_PRINT("wait_fd=%d\n", wait_fd);
+
+		if (ASYNC_WAIT_CTX_set_wait_fd(wait_ctx, engine_id, wait_fd,
+					       NULL, async_fd_cleanup) == 0) {
+			ERR_PRINT("ASYNC_WAIT_CTX set wait fd error\n");
+			async_fd_cleanup(wait_ctx, engine_id, wait_fd, NULL);
+			return 0;
+		}
+		DBG_PRINT("before calling wd_do_Async, wait_fd=%d\n", wait_fd);
+
+		/* do job async'ly */
+		wd_do_digest_async(priv->ctx_idx, data, data_len, wait_fd);
+
+		/* pause */
+		if (ASYNC_pause_job() == 0)
+			return 0;	/* failure */
+
+		DBG_PRINT("resumed from ASYNC_pause_job(), wait_fd=%d\n", wait_fd);
+		/* resumed */
+		ret = read(wait_fd, &buf, sizeof(uint64_t));
+		if (unlikely(ret != sizeof(uint64_t))) {
+			return 0;
+		}
+		DBG_PRINT("read(wait_fd) retured bytes: ret=%d\n", ret);
+		/* TODO: move this to _init */
+		/* TODO: check the return value */
+		ASYNC_WAIT_CTX_clear_fd(wait_ctx, engine_id);
+		close(wait_fd);
+		return 1;
+	}
+
+	/* sync mode */
+	ret = wd_do_digest_sync(priv->ctx_idx, data, data_len);
 	if (unlikely(ret < 0)) {
 		/* failed */
 		return 0;
@@ -139,6 +209,13 @@ static int md5_mb_digest_final(EVP_MD_CTX *ctx, unsigned char *digest)
 	struct digest_priv_ctx *priv =
 		(struct digest_priv_ctx *) EVP_MD_CTX_md_data(ctx);
 	int ret;
+
+	/* to check if it's async or not? */
+	ASYNC_JOB *a_job;
+	a_job = ASYNC_get_current_job();
+	if (a_job != NULL) {	/* this is an OPENSSL async job */
+		DBG_PRINT("_final: Async mode\n");
+	}
 
 	ret = wd_do_digest_final(priv->ctx_idx, digest);
 

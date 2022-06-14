@@ -20,7 +20,7 @@
 #include "e_md5_mb.h"
 
 /* Constants used when creating the ENGINE */
-static const char *engine_id = "md5_mb";
+const char *engine_id = "md5_mb";
 static const char *engine_name = "md5 multi-buffer software engine support";
 
 __attribute__((constructor))
