@@ -44,12 +44,17 @@
 #include <isa-l_crypto/md5_mb.h>		/* isa-l_crypto header */
 #include "isal_crypto_inf.h"
 
-#define ERR_PRINT	printf
-// #define DBG_PRINT	printf
+// #define ERR_PRINT	printf
+#define ERR_PRINT(format, ...) \
+	fprintf(stderr, "%s %d:" format, __FILE__, __LINE__, ##__VA_ARGS__)
+
 #define DBG_PRINT
+// #define DBG_PRINT(format, ...) \
+	fprintf(stderr, "%s %d:" format, __FILE__, __LINE__, ##__VA_ARGS__)
+
 // #define DIGEST_VERIFY	/* verify the digest against OpenSSL */
 
-#define NUM_CTX_SLOTS	512	/* number of available CTX slots
+#define NUM_CTX_SLOTS	1024	/* number of available CTX slots
 				 * in the CTX_POOL */
 #define MAGIC_NUMBER_EXIT_THREAD	(NUM_CTX_SLOTS*2)
 #define max(a,b)		(((a) > (b)) ? (a) : (b))

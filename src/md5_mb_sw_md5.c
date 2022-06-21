@@ -25,9 +25,13 @@
 #include "e_md5_mb.h"
 #include "isal_crypto_inf.h"
 
-#define ERR_PRINT	printf
+// #define ERR_PRINT	printf
+#define ERR_PRINT(format, ...) \
+	fprintf(stderr, "%s %d:" format, __FILE__, __LINE__, ##__VA_ARGS__)
+
 #define DBG_PRINT
-// #define DBG_PRINT	printf
+// #define DBG_PRINT(format, ...) \
+	fprintf(stderr, "%s %d:" format, __FILE__, __LINE__, ##__VA_ARGS__)
 
 /**
  * @brief this structure contains the private data for interfacing
