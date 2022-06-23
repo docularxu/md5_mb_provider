@@ -43,20 +43,20 @@
 #include <openssl/md5.h>
 #include <isa-l_crypto/md5_mb.h>		/* isa-l_crypto header */
 #include "isal_crypto_inf.h"
+#include "mpscq.h"
 
 // #define ERR_PRINT	printf
 #define ERR_PRINT(format, ...) \
 	fprintf(stderr, "%s %d:" format, __FILE__, __LINE__, ##__VA_ARGS__)
-
 #define DBG_PRINT
 // #define DBG_PRINT(format, ...) \
 	fprintf(stderr, "%s %d:" format, __FILE__, __LINE__, ##__VA_ARGS__)
 
 // #define DIGEST_VERIFY	/* verify the digest against OpenSSL */
+// #define USING_PIPE		/* pipe is not recommended, using queue */
 
 #define NUM_CTX_SLOTS	1024	/* number of available CTX slots
 				 * in the CTX_POOL */
-#define MAGIC_NUMBER_EXIT_THREAD	(NUM_CTX_SLOTS*2)
 #define max(a,b)		(((a) > (b)) ? (a) : (b))
 
 #define CTX_FLUSH_NSEC		(10000)	/* nanoseconds before forced mb_flush */
@@ -65,11 +65,19 @@ typedef enum {
 	TIME_FLUSH_FIRST = 1,	/* CTX_FLUSH_NSEC */
 } TIME_FLUSH_LEVEL;
 
+#define MAGIC_NUMBER_EXIT_THREAD	(NUM_CTX_SLOTS*2)
+
+#ifdef USING_PIPE
 /* Inter-thread communication pipe
  *   One consumer: md5_mb_worker_thread_main
  *   Multiple producers: user threads who calls wd_digest APIs
  */
 int pipefd[2];
+
+#else /* using queue */
+struct mpscq *md5_mb_worker_queue;
+int magic_q_exit = MAGIC_NUMBER_EXIT_THREAD;
+#endif
 
 /* handle of md5 multibuffer work thread */
 pthread_t md5_mbthread;
@@ -276,6 +284,7 @@ static void *md5_mb_worker_thread_main(void *args)
 		}
 		
 		if (ret == 0) {		// new CTX coming
+#ifdef USING_PIPE
 			// read in CTX index
 			ret = read(pipefd[0], &ctx_idx, sizeof(int));
 			/* TODO: Need better handling of when (ret != 4)?
@@ -297,10 +306,28 @@ static void *md5_mb_worker_thread_main(void *args)
 
 			ctx = &md5_ctx_pool.ctxpool[ctx_idx];
 			userdata = (MD5_CTX_USERDATA *)hash_ctx_user_data(ctx);
-
 			DBG_PRINT("read %d bytes from pipe, ctx_idx=%d, data_len=%d\n",
 							ret, ctx_idx, userdata->len);
 
+#else /* using queue */
+			while (unlikely((ctx = mpscq_dequeue(md5_mb_worker_queue)) == NULL)) {
+				// TODO: need to limit the times retry
+				// ERR_PRINT("\t\t\t\tRETRY DEQUEUE...\n");
+				continue;
+			};
+			if (unlikely(ctx == (void *)&magic_q_exit)) {
+				DBG_PRINT("EXIT: md5_mb worker thread\n");
+				break;
+			} else if (unlikely((ctx - &md5_ctx_pool.ctxpool[0]) >= NUM_CTX_SLOTS)) {
+				ERR_PRINT("Unexpected CTX slot index. ctx_idx=%d\n", ctx_idx);
+				continue;
+			}
+			userdata = (MD5_CTX_USERDATA *)hash_ctx_user_data(ctx);
+
+			/* note: ctx_idx = ctx - &md5_ctx_pool.ctxpool[0]; */
+			DBG_PRINT("pop from queue, ctx_idx=%d\n", \
+						ctx - &md5_ctx_pool.ctxpool[0]);
+#endif
 			// call _submit() on new CTX
 			ctx = md5_ctx_mgr_submit(&md5_ctx_mgr, ctx, userdata->buff,
 						 userdata->len, userdata->flags);
@@ -382,12 +409,22 @@ static inline int send_to_worker_thread(MD5_CTX_USERDATA *userdata,
 	userdata->buff = (unsigned char *)buff;
 	userdata->len = len;
 
+#ifdef USING_PIPE
 	// write 'ctx_idx' into pipe
 	ret = write(pipefd[1], &ctx_idx, sizeof(ctx_idx));
 	if (unlikely(ret < 0)) {
 		ERR_PRINT("write to pipefd failed\n");
 		return -1;
 	}
+#else /* using queue */
+	bool retq;
+	retq = mpscq_enqueue(md5_mb_worker_queue, &md5_ctx_pool.ctxpool[ctx_idx]);
+	if (unlikely(retq == false)) {
+		ERR_PRINT("unexpeced, queue is full\n");
+		return -1;
+	}
+	// ERR_PRINT("Queue push: ctx_idx=%d\n", ctx_idx);
+#endif
 
 	// notify MD5 mb worker thread
 	sem_post(&md5_ctx_pool.sem_ctx_filled);
@@ -512,13 +549,16 @@ int isal_crypto_md5_multi_thread_init(void)
 {
 	int ret = 0;
 
-	
-	/* step 1: create a pipe for communitcations */
+	/* step 1: create an entity for communitcations */
+#ifdef USING_PIPE
 	if (pipe2(pipefd, O_DIRECT) != 0) {
 		ERR_PRINT("pipe creation failed\n");
 		return -1;
 	}
-
+#else /* using queue */
+	md5_mb_worker_queue = mpscq_create(NULL, NUM_CTX_SLOTS);
+#endif
+	
 	/* step 1.1: initialize CTX pool */
 	if (ctx_pool_init() !=0) { ERR_PRINT("ctx_pool_init() failed\n");
 		// TODO: tear down the pipe
@@ -546,24 +586,37 @@ int isal_crypto_md5_multi_thread_init(void)
  */
 int isal_crypto_md5_multi_thread_destroy (void)
 {
-	int ctx_idx = MAGIC_NUMBER_EXIT_THREAD;
 	int ret;
 
 	/* TODO:
 	 1. flush all unfinished jobs
 	 2. destroy mutex, semaphore, such.
 	 */
-	/* to cancel worker thread, write a invalid positive ctx_idx */
+	/* to cancel worker thread */
+#ifdef USING_PIPE
+	int ctx_idx = MAGIC_NUMBER_EXIT_THREAD;
 	ret = write(pipefd[1], &ctx_idx, sizeof(ctx_idx));
 	if (ret < 0) {
 		ERR_PRINT("write to pipefd failed\n");
 		return -1;
 	}
+#else /* using queue */
+	bool retq;
+	retq = mpscq_enqueue(md5_mb_worker_queue, (void *)&magic_q_exit);
+	if (unlikely(retq == false)) {
+		ERR_PRINT("unexpeced failure to send MAGIC to queue\n");
+		return -1;
+	}
+#endif
 	// notify MD5 mb worker thread
 	sem_post(&md5_ctx_pool.sem_ctx_filled);
 
 	/* wait md5_mbthread to exit */
 	pthread_join(md5_mbthread, NULL);
 
+#ifndef USING_PIPE
+	/* clear queue */
+	mpscq_destroy(md5_mb_worker_queue);
+#endif
 	return 0;
 }
