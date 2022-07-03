@@ -20,7 +20,7 @@ This will install md5_mb.so into /usr/local/lib/engines-1.1/
 
 ## Test with OpenSSL
 ```
-openssl engine -t uadk
+openssl engine -t md5_mb
 openssl md5 -engine md5_mb <testfile>
 openssl speed -engine md5_mb -bytes 1000000 -seconds 3 md5
 
