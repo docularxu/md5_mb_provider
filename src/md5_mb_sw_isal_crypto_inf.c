@@ -45,6 +45,12 @@
 #include "isal_crypto_inf.h"
 #include "mpscq.h"
 
+#define max(a,b)	(((a) > (b)) ? (a) : (b))
+#define min(a,b)	(((a) < (b)) ? (a) : (b))
+
+/****************************************************************************
+ * configurable MACROs
+ ****************************************************************************/
 // #define ERR_PRINT	printf
 #define ERR_PRINT(format, ...) \
 	fprintf(stderr, "%s %d:" format, __FILE__, __LINE__, ##__VA_ARGS__)
@@ -55,9 +61,25 @@
 // #define DIGEST_VERIFY	/* verify the digest against OpenSSL */
 // #define USING_PIPE		/* pipe is not recommended, using queue */
 
-#define NUM_CTX_SLOTS	1024	/* number of available CTX slots
-				 * in the CTX_POOL */
-#define max(a,b)		(((a) > (b)) ? (a) : (b))
+#define NUM_CTX_SLOTS		(1024)	/* number of available CTX slots
+					 * in the CTX_POOL */
+#define NUM_WORKER_THREADS	(8)	/* one worker_thread (when fully loaded)
+					 *  will need one dedicated CPU core */
+/* CAUSION:
+ * Both the UPPER and LOWER limits should be modified according to
+ *   the underlying CPU core's multi-buffer lane width.
+ * For example, when the multi-buffer can process 32 lanes at a time, then the
+ *   upper limit must be larger than 32, such as 64.
+ *   For example, when the multi-buffer can process 16 lanes at a time, then the
+ *   upper limit must be larger than 16, such as 32.
+ *   Similarly, Lower limits depends on multi-buffer lane width too.
+ *
+ * Note:
+ * Define QUEUE_COUNT_UPPER_LIMIT to (0) can force all worker threads to be active.
+ */
+#define REBALANCE_THRESHOLD	(2 << 10)	/* rebalance after this many _digest_init calls */
+#define QUEUE_COUNT_UPPER_LIMIT	(32)		/* start more workers when up-crossed */
+#define QUEUE_COUNT_LOWER_LIMIT	(20)		/* eliminate some workers when down-crossed */
 
 #define CTX_FLUSH_NSEC		(10000)	/* nanoseconds before forced mb_flush */
 typedef enum {
@@ -75,19 +97,21 @@ typedef enum {
 int pipefd[2];
 
 #else /* using queue */
-struct mpscq *md5_mb_worker_queue;
+struct mpscq *md5_mb_worker_queue[NUM_WORKER_THREADS];
 int magic_q_exit = MAGIC_NUMBER_EXIT_THREAD;
 #endif
 
-/* handle of md5 multibuffer work thread */
-pthread_t md5_mbthread;
+/* handle of md5 multibuffer work threads */
+pthread_t md5_mbthread[NUM_WORKER_THREADS];
+/* parameters to each worker threads */
+int param_pthread[NUM_WORKER_THREADS];
 
 /* MD5_mb manager struct
  *   From a resource viewpoint, one mb manager represents one CPU core. Data
  *   lanes in one CPU core are all the computing resources a mb manager
  *   can use.
  */
-MD5_HASH_CTX_MGR md5_ctx_mgr;
+MD5_HASH_CTX_MGR md5_ctx_mgr[NUM_WORKER_THREADS];
 
 typedef int md5_callback_t(void *cb_param);
 
@@ -99,6 +123,8 @@ typedef struct {
 	void		*cb_param;
 	uint64_t	len_processed;		/* total length of data which has
 						 * been processed */
+	int		worker_idx;		/* which worker thread is assigned to
+						 * handle this CTX */
 	/* sync mode special */
 	sem_t		sem_job_done;		/* sem_post() when finished processing of this CTX */
 	/* async mode special */
@@ -114,7 +140,7 @@ MD5_CTX_USERDATA	userdata[NUM_CTX_SLOTS];
  *   can be serviced
  */
 struct CTX_POOL {
-	sem_t		sem_ctx_filled;		/* unlocked when new CTX ready */
+	sem_t		sem_ctx_filled[NUM_WORKER_THREADS];	/* unlocked when new CTX ready */
 	MD5_HASH_CTX	ctxpool[NUM_CTX_SLOTS];
 	int		inuse[NUM_CTX_SLOTS];	/* to mark the related
 						   ctxpool[slot] in use (1)
@@ -132,9 +158,11 @@ static int ctx_pool_init(void)
 {
 	int ret = 0;
 
-	if (sem_init(&md5_ctx_pool.sem_ctx_filled, 0, 0) == -1) {
-		ERR_PRINT("sem_init .sem_ctx_filled failed\n");
-		return -1;
+	for (int i = 0; i < NUM_WORKER_THREADS; i ++) {
+		if (sem_init(&md5_ctx_pool.sem_ctx_filled[i], 0, 0) == -1) {
+			ERR_PRINT("sem_init .sem_ctx_filled[%d] failed\n", i);
+			return -1;
+		}
 	}
 
 	for (int i = 0; i < NUM_CTX_SLOTS; i ++) {
@@ -251,17 +279,20 @@ static void *md5_mb_worker_thread_main(void *args)
 	MD5_HASH_CTX *ctx = NULL;
 	MD5_CTX_USERDATA *userdata;
 	int ctx_idx;
+	int worker_idx;
 	int ret;
 
 	DBG_PRINT("Enter %s\n", __func__);
+	worker_idx = *(int *)args;
 	pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
 	set_time_flush(&time_flush, TIME_FLUSH_NEVER);
 
 	while (1) {
-		ret = sem_timedwait(&md5_ctx_pool.sem_ctx_filled, &time_flush);
+		ret = sem_timedwait(&md5_ctx_pool.sem_ctx_filled[worker_idx],
+				    &time_flush);
 		if (ret == -1 && errno == ETIMEDOUT) {	// timeout
-			DBG_PRINT("sem timed out. sec=%ld, nsec=%ld ns\n", time_flush.tv_sec,
-					time_flush.tv_nsec);
+			DBG_PRINT("sem timed out. sec=%ld, nsec=%ld ns\n", \
+				  time_flush.tv_sec, time_flush.tv_nsec);
 			// DBG_PRINT(".");
 			/* TODO: should we _flush repetitively to finish all jobs,
 			 *         or should we _flush only once?
@@ -269,7 +300,7 @@ static void *md5_mb_worker_thread_main(void *args)
 			 *         to make the next timeout come faster?
 			 */
 			// call _flush() on timeout
-			ctx = md5_ctx_mgr_flush(&md5_ctx_mgr);
+			ctx = md5_ctx_mgr_flush(&md5_ctx_mgr[worker_idx]);
 
 			// check if a valid *job is returned, call its _cb())
 			if (ctx != NULL) {
@@ -310,10 +341,10 @@ static void *md5_mb_worker_thread_main(void *args)
 							ret, ctx_idx, userdata->len);
 
 #else /* using queue */
-			while (unlikely((ctx = mpscq_dequeue(md5_mb_worker_queue)) == NULL)) {
+			while (unlikely((ctx = mpscq_dequeue(md5_mb_worker_queue[worker_idx])) == NULL)) {
+				/* this happens when a thread is inserting into the queue */
 				// TODO: need to limit the times retry
-				// ERR_PRINT("\t\t\t\tRETRY DEQUEUE...\n");
-				continue;
+				continue; /* retry */
 			};
 			if (unlikely(ctx == (void *)&magic_q_exit)) {
 				DBG_PRINT("EXIT: md5_mb worker thread\n");
@@ -329,7 +360,7 @@ static void *md5_mb_worker_thread_main(void *args)
 						ctx - &md5_ctx_pool.ctxpool[0]);
 #endif
 			// call _submit() on new CTX
-			ctx = md5_ctx_mgr_submit(&md5_ctx_mgr, ctx, userdata->buff,
+			ctx = md5_ctx_mgr_submit(&md5_ctx_mgr[worker_idx], ctx, userdata->buff,
 						 userdata->len, userdata->flags);
 
 			// check if a valid *job is returned, call its _cb())
@@ -353,12 +384,87 @@ static void *md5_mb_worker_thread_main(void *args)
 }
 
 /**
- * @brief Allocate a CTX slot from the md5_ctx_pool and return the index
+ * @brief a count of how many times _digest_init being called
+ * it must be protected for thread-safety.
+ */
+int master_count_md5_init = 0;
+/**
+ * @brief number of currently active worker threads
+ * new incoming jobs can only be assigned to the worker threads
+ * in the range of md5_mbthread[0..(n_active_workers - 1)].
+ * it must be protected for thread-safety.
+ * valid values:
+ *  - minimum: 1
+ *  - maximum: NUM_WORKER_THREADS
+ */
+int n_active_workers = 1;
+
+/**
+ * @brief pick a worker thread and return its worker index
+ *
+ * @param count: a hint number
+ * @param n_active: the range to pick from
+ * @return int: the chosen worker thread's index
+ */
+static inline int pick_a_worker_thread(int count, int n_active)
+{
+	/* allocate in a round-robin manner */
+	return (count % n_active);
+}
+
+/**
+ * @brief Assign a worker thread and rebalance when necessary
+ * @return: worker_idx
+ */
+static int worker_thread_assign(void)
+{
+	int count;			/* a local copy */
+	int n_active;			/* a local copy */
+	int upper, lower;	/* queue length in ranges */
+	int q_len;
+
+	/* count is a local-copy of master_count */
+	count = atomic_fetch_add_explicit(&master_count_md5_init, 1,
+					memory_order_acquire);
+	/* n_active is a local-copy of global n_active_workers */
+	n_active = atomic_load(&n_active_workers);
+	/* rebalance is not needed */
+	if (count % REBALANCE_THRESHOLD != 0) {
+		return pick_a_worker_thread(count, n_active);
+	}
+
+	/* rebalance */
+	upper = 0;
+	lower = 0;
+	/* counting number of queue count in each range */
+	for (int i = 0; i < n_active; i ++) {
+		q_len = mpscq_count(md5_mb_worker_queue[i]);
+		DBG_PRINT("q:%d, q_len:%d\n", i, q_len);
+		if (q_len >= QUEUE_COUNT_UPPER_LIMIT)
+			upper ++;
+		else if (q_len < QUEUE_COUNT_LOWER_LIMIT)
+			lower ++;
+	}
+
+	if (upper >= n_active) {	/* expand the active worker threads pool */
+		n_active = min(upper + 1, NUM_WORKER_THREADS);
+	}
+	else if (lower > 0) {	/* shrink the active workers threads pool */
+		n_active = max(1, n_active - lower);
+	}
+	atomic_store(&n_active_workers, n_active);
+
+	DBG_PRINT("rebalanced, n_active_workers=%d, count=%d\n", n_active, count);
+	return pick_a_worker_thread(count, n_active);
+}
+
+/**
+ * @brief Allocate a CTX slot and assign a worker thread
  * @return:
- *    0 or positive: succeed, return the CTX index
- *    negative: failure
- *    -EBUSY: All CTXs in the md5_ctx_pool have been used. Upper
- *              layer can try again at a later time.
+ *    0 or positive: succeed, return ctx index
+ *    negative     : failure
+ *      -EBUSY     : All CTXs in the md5_ctx_pool have been used. Upper
+ *                   layer can try again at a later time.
  */
 int wd_do_digest_init(void)
 {
@@ -381,6 +487,8 @@ int wd_do_digest_init(void)
 	userdata->cb_param = (void *)ctx;
 	//   - set callback into .userdata
 	userdata->cb = (md5_callback_t *)wd_md5_ctx_callback;
+	// assign a worker thread
+	userdata->worker_idx = worker_thread_assign();
 
 	return ctx_idx;
 }
@@ -418,7 +526,7 @@ static inline int send_to_worker_thread(MD5_CTX_USERDATA *userdata,
 	}
 #else /* using queue */
 	bool retq;
-	retq = mpscq_enqueue(md5_mb_worker_queue, &md5_ctx_pool.ctxpool[ctx_idx]);
+	retq = mpscq_enqueue(md5_mb_worker_queue[userdata->worker_idx], &md5_ctx_pool.ctxpool[ctx_idx]);
 	if (unlikely(retq == false)) {
 		ERR_PRINT("unexpeced, queue is full\n");
 		return -1;
@@ -427,7 +535,7 @@ static inline int send_to_worker_thread(MD5_CTX_USERDATA *userdata,
 #endif
 
 	// notify MD5 mb worker thread
-	sem_post(&md5_ctx_pool.sem_ctx_filled);
+	sem_post(&md5_ctx_pool.sem_ctx_filled[userdata->worker_idx]);
 	return 0;
 }
 
@@ -527,8 +635,8 @@ int wd_do_digest_final(int ctx_idx, unsigned char *digest)
 #ifdef DIGEST_VERIFY
 	for (int j = 0; j < MD5_DIGEST_NWORDS; j++) {
 		if (ctx->job.result_digest[j] != to_le32(((uint32_t *)md5_ssl)[j])) {
-			ERR_PRINT("\n================= DIGEST_FAILURE %08X <=> %08X\n",
-				ctx->job.result_digest[j],
+			ERR_PRINT("\n================= DIGEST_FAILURE %08X <=> %08X\n", \
+				ctx->job.result_digest[j], \
 				to_le32(((uint32_t *) md5_ssl)[j]));
 		}
 	}
@@ -549,6 +657,12 @@ int isal_crypto_md5_multi_thread_init(void)
 {
 	int ret = 0;
 
+	/* step 0: initialize CTX pool */
+	if (ctx_pool_init() !=0) {
+		ERR_PRINT("ctx_pool_init() failed\n");
+		return -1;
+	}
+
 	/* step 1: create an entity for communitcations */
 #ifdef USING_PIPE
 	if (pipe2(pipefd, O_DIRECT) != 0) {
@@ -556,23 +670,23 @@ int isal_crypto_md5_multi_thread_init(void)
 		return -1;
 	}
 #else /* using queue */
-	md5_mb_worker_queue = mpscq_create(NULL, NUM_CTX_SLOTS);
+	for (int i = 0; i < NUM_WORKER_THREADS; i ++) {
+		/* maximum capacity: NUM_CTX_SLOTS */
+		md5_mb_worker_queue[i] = mpscq_create(NULL, NUM_CTX_SLOTS);
+	}
 #endif
 	
-	/* step 1.1: initialize CTX pool */
-	if (ctx_pool_init() !=0) { ERR_PRINT("ctx_pool_init() failed\n");
-		// TODO: tear down the pipe
-		return -1;
+	for (int i = 0; i < NUM_WORKER_THREADS; i ++) {
+		/* step 2: initialize mb mgr */
+		md5_ctx_mgr_init(&md5_ctx_mgr[i]);
+
+		/* step 3: create md5_mb worker thread */
+		param_pthread[i] = i;
+		ret = pthread_create(&md5_mbthread[i], NULL,
+				     &md5_mb_worker_thread_main, (void *)&param_pthread[i]);
+		if (ret != 0)
+			ERR_PRINT("md5_mb worker_thread %d pthread_create() failed\n", i);
 	}
-
-	/* step 2: initialize mb mgr */
-	md5_ctx_mgr_init(&md5_ctx_mgr);
-
-	/* step 3: create md5_mb worker thread */
-	ret = pthread_create(&md5_mbthread, NULL,
-			     &md5_mb_worker_thread_main, (void *)NULL);
-	if (ret != 0)
-		ERR_PRINT("md5_mb worker thread pthread_create() failed\n");
 
 	return ret;
 }
@@ -600,23 +714,30 @@ int isal_crypto_md5_multi_thread_destroy (void)
 		ERR_PRINT("write to pipefd failed\n");
 		return -1;
 	}
-#else /* using queue */
-	bool retq;
-	retq = mpscq_enqueue(md5_mb_worker_queue, (void *)&magic_q_exit);
-	if (unlikely(retq == false)) {
-		ERR_PRINT("unexpeced failure to send MAGIC to queue\n");
-		return -1;
-	}
-#endif
 	// notify MD5 mb worker thread
 	sem_post(&md5_ctx_pool.sem_ctx_filled);
-
-	/* wait md5_mbthread to exit */
-	pthread_join(md5_mbthread, NULL);
-
-#ifndef USING_PIPE
-	/* clear queue */
-	mpscq_destroy(md5_mb_worker_queue);
+#else /* using queue */
+	for (int i = 0; i < NUM_WORKER_THREADS; i ++) {
+		bool retq;
+		// enqueue the magic word
+		retq = mpscq_enqueue(md5_mb_worker_queue[i], (void *)&magic_q_exit);
+		if (unlikely(retq == false)) {
+			ERR_PRINT("unexpeced failure to send MAGIC to queue\n");
+			return -1;
+		}
+		// notify MD5 mb worker thread
+		sem_post(&md5_ctx_pool.sem_ctx_filled[i]);
+	}
 #endif
+
+	for (int i = 0; i < NUM_WORKER_THREADS; i ++) {
+		/* wait md5_mbthread to exit */
+		pthread_join(md5_mbthread[i], NULL);
+#ifndef USING_PIPE
+		/* clear queue */
+		mpscq_destroy(md5_mb_worker_queue[i]);
+#endif
+	}
+
 	return 0;
 }
