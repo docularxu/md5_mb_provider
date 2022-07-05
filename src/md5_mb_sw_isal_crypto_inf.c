@@ -66,20 +66,17 @@
 #define NUM_WORKER_THREADS	(8)	/* one worker_thread (when fully loaded)
 					 *  will need one dedicated CPU core */
 /* CAUSION:
- * Both the UPPER and LOWER limits should be modified according to
+ * The UPPER limit should be modified according to
  *   the underlying CPU core's multi-buffer lane width.
  * For example, when the multi-buffer can process 32 lanes at a time, then the
  *   upper limit must be larger than 32, such as 64.
  *   For example, when the multi-buffer can process 16 lanes at a time, then the
  *   upper limit must be larger than 16, such as 32.
- *   Similarly, Lower limits depends on multi-buffer lane width too.
  *
  * Note:
- * Define QUEUE_COUNT_UPPER_LIMIT to (0) can force all worker threads to be active.
+ * Define QUEUE_COUNT_UPPER_LIMIT to (-1) can force all worker threads to be active.
  */
-#define REBALANCE_THRESHOLD	(2 << 10)	/* rebalance after this many _digest_init calls */
 #define QUEUE_COUNT_UPPER_LIMIT	(32)		/* start more workers when up-crossed */
-#define QUEUE_COUNT_LOWER_LIMIT	(20)		/* eliminate some workers when down-crossed */
 
 #define CTX_FLUSH_NSEC		(10000)	/* nanoseconds before forced mb_flush */
 typedef enum {
@@ -388,16 +385,6 @@ static void *md5_mb_worker_thread_main(void *args)
  * it must be protected for thread-safety.
  */
 int master_count_md5_init = 0;
-/**
- * @brief number of currently active worker threads
- * new incoming jobs can only be assigned to the worker threads
- * in the range of md5_mbthread[0..(n_active_workers - 1)].
- * it must be protected for thread-safety.
- * valid values:
- *  - minimum: 1
- *  - maximum: NUM_WORKER_THREADS
- */
-int n_active_workers = 1;
 
 /**
  * @brief pick a worker thread and return its worker index
@@ -418,44 +405,29 @@ static inline int pick_a_worker_thread(int count, int n_active)
  */
 static int worker_thread_assign(void)
 {
-	int count;			/* a local copy */
-	int n_active;			/* a local copy */
-	int upper, lower;	/* queue length in ranges */
+	int count;		/* a local copy of the master count */
+	int first_low_idx;	/* the first queue who is under usage */
 	int q_len;
 
-	/* count is a local-copy of master_count */
-	count = atomic_fetch_add_explicit(&master_count_md5_init, 1,
-					memory_order_acquire);
-	/* n_active is a local-copy of global n_active_workers */
-	n_active = atomic_load(&n_active_workers);
-	/* rebalance is not needed */
-	if (count % REBALANCE_THRESHOLD != 0) {
-		return pick_a_worker_thread(count, n_active);
-	}
-
 	/* rebalance */
-	upper = 0;
-	lower = 0;
-	/* counting number of queue count in each range */
-	for (int i = 0; i < n_active; i ++) {
-		q_len = mpscq_count(md5_mb_worker_queue[i]);
-		DBG_PRINT("q:%d, q_len:%d\n", i, q_len);
-		if (q_len >= QUEUE_COUNT_UPPER_LIMIT)
-			upper ++;
-		else if (q_len < QUEUE_COUNT_LOWER_LIMIT)
-			lower ++;
+	for (first_low_idx = 0; first_low_idx < NUM_WORKER_THREADS; first_low_idx ++) {
+		q_len = mpscq_count(md5_mb_worker_queue[first_low_idx]);
+		if (q_len <= QUEUE_COUNT_UPPER_LIMIT) {
+			/* break at the first queue whose length is not
+			 * crossing the UPPER limit
+			 */
+			break;
+		}
 	}
 
-	if (upper >= n_active) {	/* expand the active worker threads pool */
-		n_active = min(upper + 1, NUM_WORKER_THREADS);
+	if (first_low_idx == NUM_WORKER_THREADS) {
+		/* all worker_threads are full */
+		count = atomic_fetch_add_explicit(&master_count_md5_init, 1,
+					memory_order_acquire);
+		return pick_a_worker_thread(count, NUM_WORKER_THREADS);
 	}
-	else if (lower > 0) {	/* shrink the active workers threads pool */
-		n_active = max(1, n_active - lower);
-	}
-	atomic_store(&n_active_workers, n_active);
 
-	DBG_PRINT("rebalanced, n_active_workers=%d, count=%d\n", n_active, count);
-	return pick_a_worker_thread(count, n_active);
+	return first_low_idx;	/* return the first low */
 }
 
 /**
