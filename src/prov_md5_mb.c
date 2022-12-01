@@ -72,7 +72,7 @@ static void *md5_mb_dupctx(void *dctx)
 	struct digest_priv_ctx *ret;
 	
 	in = (struct digest_priv_ctx *)dctx;
-	ret = OPENSSL_zalloc(sizeof(*ctx));
+	ret = OPENSSL_zalloc(sizeof(struct digest_priv_ctx *));
 	
 	if (ret != NULL)
 		*ret = *in;
@@ -118,7 +118,7 @@ static const OSSL_PARAM *md5_mb_gettable_params(void *provctx)
 }
 
 static int ossl_digest_default_get_params(OSSL_PARAM params[], size_t blksz,
-				   size_t paramsz, unsigned long flags)
+				   size_t paramsz)
 {
 
 	OSSL_PARAM *p = NULL;
@@ -135,13 +135,13 @@ static int ossl_digest_default_get_params(OSSL_PARAM params[], size_t blksz,
 	}
 	p = OSSL_PARAM_locate(params, OSSL_DIGEST_PARAM_XOF);
 	if (p != NULL
-		&& !OSSL_PARAM_set_int(p, (flags & PROV_DIGEST_FLAG_XOF) != 0)) {
+		&& !OSSL_PARAM_set_int(p, 0)) {
 		ERR_raise(ERR_LIB_PROV, PROV_R_FAILED_TO_SET_PARAMETER);
 		return 0;
 	}
 	p = OSSL_PARAM_locate(params, OSSL_DIGEST_PARAM_ALGID_ABSENT);
 	if (p != NULL
-		&& !OSSL_PARAM_set_int(p, (flags & PROV_DIGEST_FLAG_ALGID_ABSENT) != 0)) {
+		&& !OSSL_PARAM_set_int(p, 0)) {
 		ERR_raise(ERR_LIB_PROV, PROV_R_FAILED_TO_SET_PARAMETER);
 		return 0;
 	}
@@ -151,7 +151,7 @@ static int ossl_digest_default_get_params(OSSL_PARAM params[], size_t blksz,
 static int md5_mb_get_params(OSSL_PARAM params[])
 {
 	return ossl_digest_default_get_params(params, MD5_CBLOCK,
-					      MD5_DIGEST_LENGTH, 0);
+					      MD5_DIGEST_LENGTH);
 }
 
 /* Note: all or none should be implemented:
@@ -159,21 +159,47 @@ static int md5_mb_get_params(OSSL_PARAM params[])
  * OSSL_FUNC_digest_update and OSSL_FUNC_digest_final
  */
 const OSSL_DISPATCH md5_mb_prov_md5_functions[] = {
-	{ OSSL_FUNC_DIGEST_NEWCTX, md5_mb_newctx },
-	{ OSSL_FUNC_DIGEST_FREECTX, md5_mb_freectx },
-	{ OSSL_FUNC_DIGEST_DUPCTX, md5_mb_dupctx },
-	{ OSSL_FUNC_DIGEST_INIT, md5_mb_dinit },
-	{ OSSL_FUNC_DIGEST_UPDATE, md5_mb_dupdate },
-	{ OSSL_FUNC_DIGEST_FINAL, md5_mb_dfinal },
-	{ OSSL_FUNC_DIGEST_GET_PARAMS, md5_mb_get_params },
-	{ OSSL_FUNC_DIGEST_GETTABLE_PARAMS, md5_mb_gettable_params },
+	{ OSSL_FUNC_DIGEST_NEWCTX, (void (*)(void))md5_mb_newctx },
+	{ OSSL_FUNC_DIGEST_FREECTX, (void (*)(void))md5_mb_freectx },
+	{ OSSL_FUNC_DIGEST_DUPCTX, (void (*)(void))md5_mb_dupctx },
+	{ OSSL_FUNC_DIGEST_INIT, (void (*)(void))md5_mb_dinit },
+	{ OSSL_FUNC_DIGEST_UPDATE, (void (*)(void))md5_mb_dupdate },
+	{ OSSL_FUNC_DIGEST_FINAL, (void (*)(void))md5_mb_dfinal },
+	{ OSSL_FUNC_DIGEST_GET_PARAMS, (void (*)(void))md5_mb_get_params },
+	{ OSSL_FUNC_DIGEST_GETTABLE_PARAMS, (void (*)(void))md5_mb_gettable_params },
 	{ 0, NULL }
 };
 
 static const OSSL_ALGORITHM md5_mb_prov_digests[] = {
-	ALG(PROV_NAMES_MD5, md5_mb_prov_md5_functions),
+	ALG(OSSL_DIGEST_NAME_MD5, md5_mb_prov_md5_functions),
 	{ NULL, NULL, NULL }
 };
+
+/*
+ *  Provider context
+ */
+struct provider_ctx_st {
+	const OSSL_CORE_HANDLE *core_handle;
+	OSSL_LIB_CTX *libctx;
+};
+
+static void provider_ctx_free(struct provider_ctx_st *ctx)
+{
+	OPENSSL_free(ctx);
+}
+
+static struct provider_ctx_st *provider_ctx_new(const OSSL_CORE_HANDLE *handle,
+                                                OSSL_LIB_CTX *libctx)
+{
+	struct provider_ctx_st *ctx;
+
+	if ((ctx = OPENSSL_zalloc(sizeof(*ctx))) != NULL) {
+		ctx->core_handle = handle;
+		ctx->libctx = libctx;
+	}
+
+	return ctx;
+}
 
 /*
  * provider DISPATCH routines
@@ -217,15 +243,19 @@ static int md5_mb_prov_get_params(void *provctx, OSSL_PARAM params[])
 	if (p != NULL && !OSSL_PARAM_set_utf8_ptr(p, "rc0"))
 		return 0;
 	p = OSSL_PARAM_locate(params, OSSL_PROV_PARAM_STATUS);
-	if (p != NULL && !OSSL_PARAM_set_int(p, ossl_prov_is_running()))
+	if (p != NULL && !OSSL_PARAM_set_int(p, 1))
 		return 0;
 	return 1;
 }
 
 static void md5_mb_prov_teardown(void *provctx)
 {
-	OSSL_LIB_CTX_free(PROV_LIBCTX_OF(provctx));
-	ossl_prov_ctx_free(provctx);
+	struct provider_ctx_st *pctx = provctx;
+
+	if (pctx != NULL) {
+		OSSL_LIB_CTX_free(pctx->libctx);
+		provider_ctx_free(pctx);
+	}
 
 	/* tear down */
 	isal_crypto_md5_multi_thread_destroy();
@@ -233,8 +263,8 @@ static void md5_mb_prov_teardown(void *provctx)
 
 /* The base dispatch table */
 static const OSSL_DISPATCH md5_mb_prov_dispatch_table[] = {
-	{ OSSL_FUNC_PROVIDER_TEARDOWN, (funcptr_t)md5_mb_prov_teardown },
-	{ OSSL_FUNC_PROVIDER_QUERY_OPERATION, (funcptr_t)md5_mb_prov_query },
+	{ OSSL_FUNC_PROVIDER_TEARDOWN, (void (*)(void))md5_mb_prov_teardown },
+	{ OSSL_FUNC_PROVIDER_QUERY_OPERATION, (void (*)(void))md5_mb_prov_query },
 	{ OSSL_FUNC_PROVIDER_GETTABLE_PARAMS, (void (*)(void))md5_mb_prov_gettable_params },
 	{ OSSL_FUNC_PROVIDER_GET_PARAMS, (void (*)(void))md5_mb_prov_get_params },
 	{ 0, NULL }
@@ -251,15 +281,17 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
 	isal_crypto_md5_multi_thread_init();
 
 	/* create libctx */
-	if ((*provctx = ossl_prov_ctx_new()) == NULL
-		|| (libctx = OSSL_LIB_CTX_new(handle, in)) == NULL) {
+	if ((libctx = OSSL_LIB_CTX_new()) == NULL) {
 		OSSL_LIB_CTX_free(libctx);
 		goto err;
 	}
 
 	/* set up provctx */
-	ossl_prov_ctx_set0_libctx(*provctx, libctx);
-	ossl_prov_ctx_set0_handle(*provctx, handle);
+	*provctx = provider_ctx_new(handle, libctx);
+	if (*provctx == NULL) {
+		OSSL_LIB_CTX_free(libctx);
+		goto err;
+	}
 
 	*out = md5_mb_prov_dispatch_table;
 	return 1;
