@@ -14,6 +14,9 @@
 #define DBG_PRINT(format, ...) \
 	fprintf(stderr, "%s %d:" format, __FILE__, __LINE__, ##__VA_ARGS__)
 
+/* served as a key to ASYNC_JOBs */
+extern const char *engine_id;
+
 /**
  * @brief this structure contains the private data for interfacing
  *        with multi-threaded isa-l_crypto

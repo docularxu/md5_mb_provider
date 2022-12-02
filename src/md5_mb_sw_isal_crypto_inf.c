@@ -353,7 +353,7 @@ static void *md5_mb_worker_thread_main(void *args)
 			userdata = (MD5_CTX_USERDATA *)hash_ctx_user_data(ctx);
 
 			/* note: ctx_idx = ctx - &md5_ctx_pool.ctxpool[0]; */
-			DBG_PRINT("pop from queue, ctx_idx=%d\n", \
+			DBG_PRINT("pop from queue, ctx_idx=%ld\n", \
 						ctx - &md5_ctx_pool.ctxpool[0]);
 #endif
 			// call _submit() on new CTX

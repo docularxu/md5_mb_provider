@@ -19,6 +19,9 @@
 #include "isal_crypto_inf.h"
 #include "common.h"
 
+/* served as a key to ASYNC_JOBs */
+const char *engine_id = "md5_mb";
+
 static void async_fd_cleanup(ASYNC_WAIT_CTX *ctx, const void *key,
 			     OSSL_ASYNC_FD readfd, void *custom)
 {
