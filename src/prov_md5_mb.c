@@ -29,7 +29,7 @@ static OSSL_FUNC_provider_query_operation_fn md5_mb_prov_query;
 static OSSL_FUNC_provider_gettable_params_fn md5_mb_prov_gettable_params;
 static OSSL_FUNC_provider_get_params_fn md5_mb_prov_get_params;
 
-#define ALG(NAMES, FUNC) { NAMES, "provider=md5_mb,multi_buffer=yes", FUNC }
+#define ALG(NAMES, FUNC) { NAMES, "provider=md5mb", FUNC }
 
 #ifdef STATIC_MD5_MB
 OSSL_provider_init_fn ossl_md5_mb_prov_init;
@@ -172,6 +172,9 @@ const OSSL_DISPATCH md5_mb_prov_md5_functions[] = {
 
 static const OSSL_ALGORITHM md5_mb_prov_digests[] = {
 	ALG(OSSL_DIGEST_NAME_MD5, md5_mb_prov_md5_functions),
+	/*
+	 * ALG("MD5:SSL3-MD5:1.2.840.113549.2.5", md5_mb_prov_md5_functions),
+	 */
 	{ NULL, NULL, NULL }
 };
 
@@ -278,7 +281,8 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
 	OSSL_LIB_CTX *libctx = NULL;
 
 	/* bind to ISA-L_crypto MD5 multi-thread framework */
-	isal_crypto_md5_multi_thread_init();
+	if (isal_crypto_md5_multi_thread_init() != 0)
+		goto err;
 
 	/* create libctx */
 	if ((libctx = OSSL_LIB_CTX_new()) == NULL) {
