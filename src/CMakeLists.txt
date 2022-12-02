@@ -16,7 +16,7 @@ set_target_properties(libmd5mbprov PROPERTIES
   POSITION_INDEPENDENT_CODE ON
   OUTPUT_NAME "md5mbprov")
 target_link_libraries(libmd5mbprov
-       		      ${OPENSSL_CRYPTO_LIBRARIES}
+		      ${OPENSSL_CRYPTO_LIBRARIES}
 		      pthread
 		      isal_crypto)
 target_include_directories(libmd5mbprov PUBLIC ".")

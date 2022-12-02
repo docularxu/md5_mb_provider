@@ -34,3 +34,34 @@ openssl speed -engine md5_mb -async_jobs 32 -evp md5
 openssl speed -engine md5_mb -async_jobs 128 -evp md5
 
 ```
+
+# md5-mb-provider
+
+An OpenSSL v3.0 provider for md5. It uses isa-l_crypto's multi-buffer
+md5 as backend.
+
+## Build
+
+```
+mkdir build
+cmake -S . -B build --log-level=DEBUG
+cmake --build build --verbose
+```
+
+## Test with OpenSSL v3.0
+```
+openssl speed -provider-path [path-to-build]/build/src -provider libmd5mbprov -provider default -evp md5
+```
+Note: default provider is required generate a summary for speed. The test will take md5 implementation from libmd5mbprov.
+
+
+```
+openssl list  -provider-path /home/ubuntu/md5_mb_prov.git/build/src -provider libmd5mbprov -all-algorithms
+```
+
+Note: Expected result of 'openssl list':
+```
+Digests:
+   Provided:
+  { 1.2.840.113549.2.5, MD5, SSL3-MD5 } @ libmd5mbprov
+```
