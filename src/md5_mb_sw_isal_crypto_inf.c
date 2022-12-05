@@ -63,7 +63,7 @@
 
 #define NUM_CTX_SLOTS		(1024)	/* number of available CTX slots
 					 * in the CTX_POOL */
-#define NUM_WORKER_THREADS	(8)	/* one worker_thread (when fully loaded)
+#define NUM_WORKER_THREADS	(6)	/* one worker_thread (when fully loaded)
 					 *  will need one dedicated CPU core */
 /* CAUSION:
  * The UPPER limit should be modified according to
@@ -630,7 +630,7 @@ int isal_crypto_md5_multi_thread_init(void)
 	pthread_attr_t attr;
 	cpu_set_t cpus;
 	/* TODO: cpubinds[] list need to be tailored */
-	int cpubinds[] = {0, 4, 2, 6, 1, 5, 3, 7};
+	int cpubinds[] = {0, 1, 2, 3, 4, 5, 6, 7};
 	int ret = 0;
 
 	/* step 0: initialize CTX pool */
