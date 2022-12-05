@@ -81,11 +81,13 @@ static void *md5_mb_dupctx(void *dctx)
 
 static int md5_mb_dinit(void *dctx, const OSSL_PARAM params[])
 {
+	DBG_PRINT("enter %s\n", __func__);
 	return md5_mb_digest_init_common((struct digest_priv_ctx *)dctx);
 }
 
 static int md5_mb_dupdate(void *dctx, const unsigned char *in, size_t inl)
 {
+	DBG_PRINT("enter %s\n", __func__);
 	return md5_mb_digest_update_common((struct digest_priv_ctx *)dctx,
 					   in, inl);
 }
@@ -99,6 +101,7 @@ static int md5_mb_dupdate(void *dctx, const unsigned char *in, size_t inl)
 static int md5_mb_dfinal(void *dctx, unsigned char *out, size_t *outl,
 				  size_t outsz)
 {
+	DBG_PRINT("enter %s\n", __func__);
 	return md5_mb_digest_final_common((struct digest_priv_ctx *)dctx,
 					  out, outl, outsz);
 }
