@@ -2,6 +2,7 @@
  *
  */
 #include <openssl/engine.h>
+#include <stdio.h>
 
 #ifndef INCLUDE_MD5_MB_COMMON_H
 #define INCLUDE_MD5_MB_COMMON_H

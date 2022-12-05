@@ -163,5 +163,7 @@ int md5_mb_digest_final_common(struct digest_priv_ctx *priv,
 	}
 
 	/* succeeded */
+	if (unlikely(outl != NULL))
+		*outl = MD5_DIGEST_LENGTH;
 	return 1;
 }
