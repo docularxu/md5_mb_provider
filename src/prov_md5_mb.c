@@ -258,13 +258,16 @@ static void md5_mb_prov_teardown(void *provctx)
 {
 	struct provider_ctx_st *pctx = provctx;
 
+	DBG_PRINT("enter %s\n", __func__);
 	if (pctx != NULL) {
 		OSSL_LIB_CTX_free(pctx->libctx);
 		provider_ctx_free(pctx);
 	}
 
+	DBG_PRINT("before isal_cryto thread destroy %s\n", __func__);
 	/* tear down */
 	isal_crypto_md5_multi_thread_destroy();
+	DBG_PRINT("exit %s\n", __func__);
 }
 
 /* The base dispatch table */
