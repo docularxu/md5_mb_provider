@@ -44,6 +44,7 @@
 #include <isa-l_crypto/md5_mb.h>		/* isa-l_crypto header */
 #include "isal_crypto_inf.h"
 #include "mpscq.h"
+#include "common.h"
 
 #define max(a,b)	(((a) > (b)) ? (a) : (b))
 #define min(a,b)	(((a) < (b)) ? (a) : (b))
@@ -51,13 +52,6 @@
 /****************************************************************************
  * configurable MACROs
  ****************************************************************************/
-// #define ERR_PRINT	printf
-#define ERR_PRINT(format, ...) \
-	fprintf(stderr, "%s %d:" format, __FILE__, __LINE__, ##__VA_ARGS__)
-#define DBG_PRINT
-// #define DBG_PRINT(format, ...) \
-	fprintf(stderr, "%s %d:" format, __FILE__, __LINE__, ##__VA_ARGS__)
-
 // #define DIGEST_VERIFY	/* verify the digest against OpenSSL */
 // #define USING_PIPE		/* pipe is not recommended, using queue */
 
@@ -279,8 +273,8 @@ static void *md5_mb_worker_thread_main(void *args)
 	int worker_idx;
 	int ret;
 
-	DBG_PRINT("Enter %s\n", __func__);
 	worker_idx = *(int *)args;
+	DBG_PRINT("Enter %s(), worker_idx=%d\n", __func__, worker_idx);
 	pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
 	set_time_flush(&time_flush, TIME_FLUSH_NEVER);
 
@@ -344,7 +338,7 @@ static void *md5_mb_worker_thread_main(void *args)
 				continue; /* retry */
 			};
 			if (unlikely(ctx == (void *)&magic_q_exit)) {
-				DBG_PRINT("EXIT: md5_mb worker thread\n");
+				DBG_PRINT("EXIT: md5_mb worker thread %d\n", worker_idx);
 				break;
 			} else if (unlikely((ctx - &md5_ctx_pool.ctxpool[0]) >= NUM_CTX_SLOTS)) {
 				ERR_PRINT("Unexpected CTX slot index. ctx_idx=%d\n", ctx_idx);
@@ -722,9 +716,11 @@ int isal_crypto_md5_multi_thread_destroy (void)
 #endif
 
 	for (int i = 0; i < NUM_WORKER_THREADS; i ++) {
+		DBG_PRINT("%s(), pthread_join: %d\n", __func__, i);
 		/* wait md5_mbthread to exit */
 		pthread_join(md5_mbthread[i], NULL);
 #ifndef USING_PIPE
+		DBG_PRINT("%s(), mpscq_destroy: %d\n", __func__, i);
 		/* clear queue */
 		mpscq_destroy(md5_mb_worker_queue[i]);
 #endif
