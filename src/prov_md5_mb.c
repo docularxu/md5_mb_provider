@@ -304,10 +304,12 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
 	}
 
 	*out = md5_mb_prov_dispatch_table;
+	DBG_PRINT("prov_md5_mb Provider Init succeed!\n");
 	return 1;
 
 err:
 	md5_mb_prov_teardown(*provctx);
 	*provctx = NULL;
+	ERR_PRINT("prov_md5_mb Provider Init failed!\n");
 	return 0;
 }
