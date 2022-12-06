@@ -21,3 +21,8 @@ target_link_libraries(libmd5mbprov
 		      isal_crypto)
 target_include_directories(libmd5mbprov PUBLIC ".")
 target_include_directories(libmd5mbprov PUBLIC ${OPENSSL_INCLUDE_DIR})
+# if(MSVC)
+#  target_compile_options(libmd5mbprov PRIVATE /W4 /WX)
+# else()
+#  target_compile_options(libmd5mbprov PRIVATE -Wall -Wextra -Wpedantic -Werror)
+# endif()
