@@ -376,8 +376,12 @@ static void *md5_mb_worker_thread_main(void *args)
 		continue;
 	}; // end of while
 	
-	/* exit */
-	pthread_exit(&ret);
+	DBG_PRINT("to call pthread_exit(), worker_idx=%d\n", worker_idx);
+	/* exit this thread:
+	 * The value pointed to by retval should not be located on the calling thread's stack
+	 * , since the contents of that stack are undefined after the thread terminates.
+	 */
+	pthread_exit(NULL);
 }
 
 /**
@@ -662,6 +666,8 @@ int isal_crypto_md5_multi_thread_init(void)
 		/* pin worker_thread i to a CPU core */
 		CPU_SET(cpubinds[(i) % sizeof(cpubinds)], &cpus);
 		pthread_attr_setaffinity_np(&attr, sizeof(cpu_set_t), &cpus);
+		/* set as joinable */
+		pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
 
 		param_pthread[i] = i;
 		ret = pthread_create(&md5_mbthread[i], &attr,
@@ -670,6 +676,7 @@ int isal_crypto_md5_multi_thread_init(void)
 			ERR_PRINT("md5_mb worker_thread %d pthread_create() failed\n", i);
 			return ret;
 		}
+		pthread_attr_destroy(&attr);
 	}
 
 	return ret;
