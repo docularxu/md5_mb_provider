@@ -11,8 +11,8 @@
 #define ERR_PRINT(format, ...) \
 	fprintf(stderr, "%s %d:" format, __FILE__, __LINE__, ##__VA_ARGS__)
 
-// #define DBG_PRINT
-#define DBG_PRINT(format, ...) \
+#define DBG_PRINT
+// #define DBG_PRINT(format, ...) \
 	fprintf(stderr, "%s %d:" format, __FILE__, __LINE__, ##__VA_ARGS__)
 
 /* served as a key to ASYNC_JOBs */
