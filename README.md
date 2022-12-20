@@ -1,13 +1,13 @@
 # md5-mb-engine
 
-An OpenSSL engine for md5. It uses isa-l_crypto's multi-buffer
+An OpenSSL v1.1.1 engine for md5. It uses isa-l_crypto's multi-buffer
 md5 lib as backend.
 
 ## Build
 
-Prerequisite: isa-l_crypto library should be built and installed.
+Prerequisite: isa-l_crypto library, the [multi-threaded version](https://github.com/docularxu/isa-l_crypto/tree/working_md5_multi_threads) must be built and installed. With multi-thread support, it allows to use multiple CPU cores to work in parallel, so enhances the overall bandwidth to another level.
 
-Build as follows:
+Fetched the above mentioned branch, build as follows:
 
 ```
 $ autoreconf -i
@@ -38,7 +38,7 @@ openssl speed -engine md5_mb -async_jobs 128 -evp md5
 # md5-mb-provider
 
 An OpenSSL v3.0 provider for md5. It uses isa-l_crypto's multi-buffer
-md5 as backend.
+md5 as backend. Refer to here to get the multi-threaded version, which allows to hardness more CPU cores.
 
 ## Build
 
