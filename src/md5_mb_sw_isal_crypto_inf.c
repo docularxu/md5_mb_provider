@@ -429,6 +429,25 @@ static int worker_thread_assign(void)
 }
 
 /**
+ * @brief Free bandwidth estimation, measured in ctx slots
+ *        Each ctx slot stands for one MD5 digest job.
+ *
+ * @return: int, number of CTX slot which can be queued before reaching
+ * 		 QUEUE_COUNT_UPPER_LIMIT. 0 if it exceeds the upper limit
+ */
+int free_bandwidth_ctx_slots(void)
+{
+	int q_len = 0;	/* number of jobs in queue */
+	int ret;
+
+	for (int i = 0; i < NUM_WORKER_THREADS; i++)
+		q_len += mpscq_count(md5_mb_worker_queue[i]);
+
+	ret = (QUEUE_COUNT_UPPER_LIMIT * NUM_WORKER_THREADS) - q_len;
+	return ret > 0 ? ret : 0;
+}
+
+/**
  * @brief Allocate a CTX slot and assign a worker thread
  * @return:
  *    0 or positive: succeed, return ctx index

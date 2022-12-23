@@ -28,6 +28,7 @@ static OSSL_FUNC_provider_teardown_fn md5_mb_prov_teardown;
 static OSSL_FUNC_provider_query_operation_fn md5_mb_prov_query;
 static OSSL_FUNC_provider_gettable_params_fn md5_mb_prov_gettable_params;
 static OSSL_FUNC_provider_get_params_fn md5_mb_prov_get_params;
+static OSSL_FUNC_provider_get_capabilities_fn md5_mb_prov_get_capabilities;
 
 #define ALG(NAMES, FUNC) { NAMES, "provider=md5mb", FUNC }
 
@@ -254,6 +255,27 @@ static int md5_mb_prov_get_params(void *provctx, OSSL_PARAM params[])
 	return 1;
 }
 
+static int md5_mb_prov_get_capabilities(void *provctx,
+					const char *capability,
+					OSSL_CALLBACK *cb,
+					void *arg)
+{
+	int ret = 0;
+
+	/* a single letter 'f' is a request for available free bandwidth
+	 * NOTE: to ensure the speed, avoid using longer string and strcmp
+	 */
+	if (*capability == 'f')
+	{
+		/* poll the underlying implementor to get free-bandwidth */
+		/* (*cb) is ignored */
+		/* (*arg) is set to an integer value */
+		*(int *)arg = free_bandwidth_ctx_slots();
+		ret = 1;
+	}
+	return ret;
+}
+
 static void md5_mb_prov_teardown(void *provctx)
 {
 	struct provider_ctx_st *pctx = provctx;
@@ -276,6 +298,7 @@ static const OSSL_DISPATCH md5_mb_prov_dispatch_table[] = {
 	{ OSSL_FUNC_PROVIDER_QUERY_OPERATION, (void (*)(void))md5_mb_prov_query },
 	{ OSSL_FUNC_PROVIDER_GETTABLE_PARAMS, (void (*)(void))md5_mb_prov_gettable_params },
 	{ OSSL_FUNC_PROVIDER_GET_PARAMS, (void (*)(void))md5_mb_prov_get_params },
+	{ OSSL_FUNC_PROVIDER_GET_CAPABILITIES, (void (*)(void))md5_mb_prov_get_capabilities },
 	{ 0, NULL }
 };
 
