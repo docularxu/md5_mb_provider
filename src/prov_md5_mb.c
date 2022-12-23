@@ -30,7 +30,7 @@ static OSSL_FUNC_provider_gettable_params_fn md5_mb_prov_gettable_params;
 static OSSL_FUNC_provider_get_params_fn md5_mb_prov_get_params;
 static OSSL_FUNC_provider_get_capabilities_fn md5_mb_prov_get_capabilities;
 
-#define ALG(NAMES, FUNC) { NAMES, "provider=md5mb", FUNC }
+#define ALG(NAMES, FUNC) { NAMES, "provider=md5mb", FUNC, "multi-buffer md5" }
 
 #ifdef STATIC_MD5_MB
 OSSL_provider_init_fn ossl_md5_mb_prov_init;
