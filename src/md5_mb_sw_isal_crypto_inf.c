@@ -649,6 +649,7 @@ int isal_crypto_md5_multi_thread_init(void)
 	/* TODO: cpubinds[] list need to be tailored */
 	int cpubinds[] = {0, 1, 2, 3, 4, 5, 6, 7};
 	int ret = 0;
+	char thread_name[16];
 
 	/* step 0: initialize CTX pool */
 	if (ctx_pool_init() !=0) {
@@ -683,9 +684,11 @@ int isal_crypto_md5_multi_thread_init(void)
 		pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
 
 		param_pthread[i] = i;
-		ret = pthread_create(&md5_mbthread[i], &attr,
-				     &md5_mb_worker_thread_main, (void *)&param_pthread[i]);
-		if (ret != 0) {
+		snprintf(thread_name, 16, "md5mbt_%d", i);	/* max allowed pthread name length 16 */
+		if ((pthread_create(&md5_mbthread[i], &attr,
+				    &md5_mb_worker_thread_main,
+				    (void *)&param_pthread[i]) != 0)
+				|| (pthread_setname_np(md5_mbthread[i], thread_name) != 0)) {
 			ERR_PRINT("md5_mb worker_thread %d pthread_create() failed\n", i);
 			return ret;
 		}
