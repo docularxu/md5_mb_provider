@@ -255,23 +255,40 @@ static int md5_mb_prov_get_params(void *provctx, OSSL_PARAM params[])
 	return 1;
 }
 
+#define PROV_NAMES_MD5 "MD5:SSL3-MD5:1.2.840.113549.2.5"
+#define MD5_ALIAS_NAME "1.2.840.113549.2.5"
+#define MD5_ALIAS_NAME2 "SSL3-MD5"
+/*
+ * this struct definition is in <openssl/crypto.h>
+ *
+ * typedef struct {
+ * 	const char *name;
+ * 	int free_bandwidth;
+ * } FREE_BANDWIDTH_QUERY;
+ */
+
 static int md5_mb_prov_get_capabilities(void *provctx,
 					const char *capability,
 					OSSL_CALLBACK *cb,
 					void *arg)
 {
 	int ret = 0;
+	FREE_BANDWIDTH_QUERY *fbw_query = (FREE_BANDWIDTH_QUERY *)arg;
 
 	/* a single letter 'f' is a request for available free bandwidth
 	 * NOTE: to ensure the speed, avoid using longer string and strcmp
 	 */
-	if (*capability == 'f')
-	{
+	if (*capability == 'f') {
 		/* poll the underlying implementor to get free-bandwidth */
 		/* (*cb) is ignored */
-		/* (*arg) is set to an integer value */
-		*(int *)arg = free_bandwidth_ctx_slots();
-		ret = 1;
+		if ((strncmp("MD5", fbw_query->name, sizeof("MD5")) == 0) ||
+				(strncmp(MD5_ALIAS_NAME, fbw_query->name, sizeof(MD5_ALIAS_NAME)) == 0) ||
+				(strncmp(MD5_ALIAS_NAME2, fbw_query->name, sizeof(MD5_ALIAS_NAME2)) == 0)) {
+			fbw_query->free_bandwidth = free_bandwidth_ctx_slots();
+			DBG_PRINT("enter %s(), fbw_query->name=%s, fbw_query->free_bandwidth=%d\n",
+				  __func__, fbw_query->name, fbw_query->free_bandwidth);
+			ret = 1;
+		}
 	}
 	return ret;
 }
