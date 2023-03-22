@@ -282,8 +282,8 @@ static void *md5_mb_worker_thread_main(void *args)
 		ret = sem_timedwait(&md5_ctx_pool.sem_ctx_filled[worker_idx],
 				    &time_flush);
 		if (ret == -1 && errno == ETIMEDOUT) {	// timeout
-			DBG_PRINT("sem timed out. sec=%ld, nsec=%ld ns\n", \
-				  time_flush.tv_sec, time_flush.tv_nsec);
+			DBG_PRINT("worker_idx=%d, sem timed out @sec=%ld;nsec=%ld ns\n", \
+				  worker_idx, time_flush.tv_sec, time_flush.tv_nsec);
 			// DBG_PRINT(".");
 			/* TODO: should we _flush repetitively to finish all jobs,
 			 *         or should we _flush only once?
@@ -298,9 +298,12 @@ static void *md5_mb_worker_thread_main(void *args)
 				userdata = (MD5_CTX_USERDATA *)hash_ctx_user_data(ctx);
 				(userdata->cb)(userdata->cb_param);
 				set_time_flush(&time_flush, TIME_FLUSH_FIRST);
+				DBG_PRINT("worker_idx=%d, a valid job returnd on flush. set_time_flush() level 1. Finished: ctx_idx=%d\n", \
+					  worker_idx, ctx - &md5_ctx_pool.ctxpool[0]);
 			} else {
 				// not job pending, no need to timed wait
 				set_time_flush(&time_flush, TIME_FLUSH_NEVER);
+				DBG_PRINT("worker_idx=%d, no jobs pending, set_time_flush() to never.\n", worker_idx);
 			}
 			continue;	// loop back for next
 		}
@@ -341,16 +344,17 @@ static void *md5_mb_worker_thread_main(void *args)
 				DBG_PRINT("EXIT: md5_mb worker thread %d\n", worker_idx);
 				break;
 			} else if (unlikely((ctx - &md5_ctx_pool.ctxpool[0]) >= NUM_CTX_SLOTS)) {
-				ERR_PRINT("Unexpected CTX slot index. ctx_idx=%d\n", ctx_idx);
+				ERR_PRINT("Unexpected CTX slot index. ctx_idx=%d\n", ctx - &md5_ctx_pool.ctxpool[0]);
 				continue;
 			}
 			userdata = (MD5_CTX_USERDATA *)hash_ctx_user_data(ctx);
 
 			/* note: ctx_idx = ctx - &md5_ctx_pool.ctxpool[0]; */
-			DBG_PRINT("pop from queue, ctx_idx=%ld\n", \
-						ctx - &md5_ctx_pool.ctxpool[0]);
+			DBG_PRINT("sem_wait triggered: nex CTX coming: worker_idx=%d, ctx_idx=%d. will call md5_ctx_mgr_ubmit\n", \
+				  worker_idx, ctx - &md5_ctx_pool.ctxpool[0]);
 #endif
 			// call _submit() on new CTX
+			DBG_PRINT("call md5_ctx_mgr_submit(): worker_idx=%d\n", worker_idx);
 			ctx = md5_ctx_mgr_submit(&md5_ctx_mgr[worker_idx], ctx, userdata->buff,
 						 userdata->len, userdata->flags);
 
@@ -360,8 +364,11 @@ static void *md5_mb_worker_thread_main(void *args)
 				DBG_PRINT("Finished: ctx_idx = %ld\n", ctx - &md5_ctx_pool.ctxpool[0]);
 				userdata = (MD5_CTX_USERDATA *)hash_ctx_user_data(ctx);
 				(userdata->cb)(userdata->cb_param);
+			} else {
+				DBG_PRINT("CAUSION! No valid *job is returned by md5_ctx_mgr_submit(). worker_idx=%d\n", worker_idx);
 			}
 
+			DBG_PRINT("set sem_time_flush to level 1. worker_idx=%d\n", worker_idx);
 			set_time_flush(&time_flush, TIME_FLUSH_FIRST);
 			continue;	// loop back for next
 		}
@@ -410,6 +417,7 @@ static int worker_thread_assign(void)
 	/* rebalance */
 	for (first_low_idx = 0; first_low_idx < NUM_WORKER_THREADS; first_low_idx ++) {
 		q_len = mpscq_count(md5_mb_worker_queue[first_low_idx]);
+		DBG_PRINT("worker_idx=%d has msg count in queue: q_len=%d\n", first_low_idx, q_len);
 		if (q_len <= QUEUE_COUNT_UPPER_LIMIT) {
 			/* break at the first queue whose length is not
 			 * crossing the UPPER limit
@@ -478,7 +486,7 @@ int wd_do_digest_init(void)
 	userdata->cb = (md5_callback_t *)wd_md5_ctx_callback;
 	// assign a worker thread
 	userdata->worker_idx = worker_thread_assign();
-
+	DBG_PRINT("ctx_idx=%d, is assigned to worker_id=%d\n", ctx_idx, userdata->worker_idx);
 	return ctx_idx;
 }
 
@@ -520,7 +528,7 @@ static inline int send_to_worker_thread(MD5_CTX_USERDATA *userdata,
 		ERR_PRINT("unexpeced, queue is full\n");
 		return -1;
 	}
-	// ERR_PRINT("Queue push: ctx_idx=%d\n", ctx_idx);
+	DBG_PRINT("enqueue: ctx_idx=%d, worker_idx=%d\n", ctx_idx, userdata->worker_idx);
 #endif
 
 	// notify MD5 mb worker thread

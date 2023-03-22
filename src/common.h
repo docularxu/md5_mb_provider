@@ -9,11 +9,11 @@
 
 // #define ERR_PRINT	printf
 #define ERR_PRINT(format, ...) \
-	fprintf(stderr, "%s %d:" format, __FILE__, __LINE__, ##__VA_ARGS__)
+	fprintf(stderr, "ERR: %s %d:" format, __FILE__, __LINE__, ##__VA_ARGS__)
 
 #define DBG_PRINT
 // #define DBG_PRINT(format, ...) \
-	fprintf(stderr, "%s %d:" format, __FILE__, __LINE__, ##__VA_ARGS__)
+	fprintf(stdout, "DBG: %s %d:" format, __FILE__, __LINE__, ##__VA_ARGS__)
 
 /* served as a key to ASYNC_JOBs */
 extern const char *engine_id;

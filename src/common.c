@@ -43,6 +43,8 @@ int md5_mb_digest_init_common(struct digest_priv_ctx *priv)
 	a_job = ASYNC_get_current_job();
 	if (a_job != NULL) {	/* this is an OPENSSL async job */
 		DBG_PRINT("_init: Async mode\n");
+	} else {
+		DBG_PRINT("_init: NOT Async mode\n");
 	}
 
 	ret = wd_do_digest_init();
@@ -89,7 +91,6 @@ int md5_mb_digest_update_common(struct digest_priv_ctx *priv,
 		wait_fd = eventfd(0, EFD_NONBLOCK);
 		if (unlikely(wait_fd == -1))
 			return 0;
-		DBG_PRINT("wait_fd=%d\n", wait_fd);
 
 		if (ASYNC_WAIT_CTX_set_wait_fd(wait_ctx, engine_id, wait_fd,
 					       NULL, async_fd_cleanup) == 0) {
@@ -97,7 +98,7 @@ int md5_mb_digest_update_common(struct digest_priv_ctx *priv,
 			async_fd_cleanup(wait_ctx, engine_id, wait_fd, NULL);
 			return 0;
 		}
-		DBG_PRINT("before calling wd_do_Async, wait_fd=%d\n", wait_fd);
+		DBG_PRINT("before calling wd_do_digest_async(), wait_fd=%d\n", wait_fd);
 
 		/* do job async'ly */
 		wd_do_digest_async(priv->ctx_idx, data, data_len, wait_fd);
@@ -112,12 +113,14 @@ int md5_mb_digest_update_common(struct digest_priv_ctx *priv,
 		if (unlikely(ret != sizeof(uint64_t))) {
 			return 0;
 		}
-		DBG_PRINT("read(wait_fd) retured bytes: ret=%d\n", ret);
+		DBG_PRINT("read(wait_fd=%d) retured bytes: ret=%d\n", wait_fd, ret);
 		/* TODO: move this to _init */
 		/* TODO: check the return value */
 		ASYNC_WAIT_CTX_clear_fd(wait_ctx, engine_id);
 		close(wait_fd);
 		return 1;
+	} else {
+		DBG_PRINT("_update: NOT Async mode\n");
 	}
 
 	/* sync mode */
