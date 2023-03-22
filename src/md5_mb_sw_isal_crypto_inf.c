@@ -621,11 +621,7 @@ int wd_do_digest_final(int ctx_idx, unsigned char *digest)
 #endif
 {
 	MD5_HASH_CTX *ctx;
-
 	ctx = &md5_ctx_pool.ctxpool[ctx_idx];
-
-	/* finalize this CTX */
-	wd_do_digest_sync(ctx_idx, NULL, 0);
 
 	memcpy(digest, hash_ctx_digest(ctx), MD5_DIGEST_LENGTH);
 
@@ -638,8 +634,8 @@ int wd_do_digest_final(int ctx_idx, unsigned char *digest)
 		}
 	}
 #endif
-
 	ctx_slot_release(ctx_idx);
+	DBG_PRINT("ctx_slot_release: %d\n", ctx_idx);
 	return 0;
 }
 

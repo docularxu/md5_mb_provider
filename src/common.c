@@ -69,14 +69,14 @@ int md5_mb_digest_update_common(struct digest_priv_ctx *priv,
 				const void *data, size_t data_len)
 {
 	ASYNC_JOB *a_job;
-	ASYNC_WAIT_CTX *wait_ctx;
-	OSSL_ASYNC_FD wait_fd;
-	uint64_t buf;
 	int ret;
 
 	/* to check if it's async or not? */
 	a_job = ASYNC_get_current_job();
 	if (a_job != NULL) {	/* this is an OPENSSL async job */
+		ASYNC_WAIT_CTX *wait_ctx;
+		OSSL_ASYNC_FD wait_fd;
+		uint64_t buf;
 		DBG_PRINT("_update Async mode\n");
 
 		/* set wait_fd */
@@ -150,16 +150,15 @@ int md5_mb_digest_final_common(struct digest_priv_ctx *priv,
 {
 
 	int ret = 0;
-	ASYNC_JOB *a_job;
 
-	/* to check if it's async or not? */
-	a_job = ASYNC_get_current_job();
-	if (a_job != NULL) {	/* this is an OPENSSL async job */
-		DBG_PRINT("_final: Async mode\n");
+	DBG_PRINT("enter _final_common()\n");
+	ret = md5_mb_digest_update_common(priv, NULL, 0);
+	if (unlikely(ret == 0)) {
+		/* failed */
+		return 0;
 	}
 
-	ret = wd_do_digest_final(priv->ctx_idx, out);
-
+	ret = wd_do_digest_final(priv->ctx_idx, out);	/* negative failure */
 	if (unlikely(ret < 0)) {
 		/* failed */
 		return 0;
